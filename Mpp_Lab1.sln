@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36705.20
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestRunner", "Mpp_Lab1\TestRunner.csproj", "{4FE53C9F-4A97-48F6-9132-49E97E8A37CF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyTestFramework", "MyTestFramework\MyTestFramework.csproj", "{AAF2BACD-964D-4916-83A9-E15C31F83B22}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ElGamalEncryption", "ElGamalEncryption\ElGamalEncryption.csproj", "{5192CAA6-0802-4A9F-ACC8-0EC773FE28A5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ElGamalEncryption.Tests", "ElGamalEncryption.Tests\ElGamalEncryption.Tests.csproj", "{83C4AB35-113B-4F46-B903-C00A0AF8E7BD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4FE53C9F-4A97-48F6-9132-49E97E8A37CF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4FE53C9F-4A97-48F6-9132-49E97E8A37CF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4FE53C9F-4A97-48F6-9132-49E97E8A37CF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4FE53C9F-4A97-48F6-9132-49E97E8A37CF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AAF2BACD-964D-4916-83A9-E15C31F83B22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AAF2BACD-964D-4916-83A9-E15C31F83B22}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AAF2BACD-964D-4916-83A9-E15C31F83B22}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AAF2BACD-964D-4916-83A9-E15C31F83B22}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5192CAA6-0802-4A9F-ACC8-0EC773FE28A5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5192CAA6-0802-4A9F-ACC8-0EC773FE28A5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5192CAA6-0802-4A9F-ACC8-0EC773FE28A5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5192CAA6-0802-4A9F-ACC8-0EC773FE28A5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{83C4AB35-113B-4F46-B903-C00A0AF8E7BD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{83C4AB35-113B-4F46-B903-C00A0AF8E7BD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{83C4AB35-113B-4F46-B903-C00A0AF8E7BD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{83C4AB35-113B-4F46-B903-C00A0AF8E7BD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {90F19332-6392-425F-8FFE-35972384D11B}
+	EndGlobalSection
+EndGlobal
