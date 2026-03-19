@@ -11,7 +11,7 @@ namespace TestRunnerApp
     {
         static async Task<int> Main(string[] args)
         {
-            Console.WriteLine("Enter full path to the test assembly (.dll), e.g.:");
+            Console.WriteLine("Введите полный путь до тестируемого проекта:");
             Console.WriteLine(@"  ..\TargetProject.Tests\bin\Debug\net8.0\TargetProject.Tests.dll");
             Console.Write("> ");
             string? assemblyPath = Console.ReadLine()?.Trim().Trim('"');

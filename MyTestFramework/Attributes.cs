@@ -21,6 +21,17 @@ public class TestCaseAttribute : Attribute
     public TestCaseAttribute(params object[] args) => Arguments = args;
 }
 
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public class TestTimeoutAttribute : Attribute
+{
+    public int Milliseconds { get; }
+
+    public TestTimeoutAttribute(int milliseconds)
+    {
+        Milliseconds = milliseconds;
+    }
+}
+
 [AttributeUsage(AttributeTargets.Method)]
 public class OneTimeSetUpAttribute : Attribute { }
 

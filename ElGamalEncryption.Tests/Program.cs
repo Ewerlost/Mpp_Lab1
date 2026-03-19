@@ -115,7 +115,7 @@ public class SharedContextTests
         Assert.IsTrue(cfg["mode"] == "test");
     }
 
-    [Test]
+    [Test(Priority = -1)]
     public void InjectionByParameter([SharedContext("config")] Dictionary<string, string> cfg)
     {
         Assert.IsNotNull(cfg);
@@ -151,6 +151,7 @@ public class ExtraAssertsAndAsyncTests
         Assert.LessThan(3, 7);
     }
 
+    [TestTimeout(500)]
     [Test]
     public async Task FastExpAsync_TaskWorks()
     {
@@ -159,7 +160,8 @@ public class ExtraAssertsAndAsyncTests
         Assert.AreEqual(1024 % 1000, res);
     }
 
-    [Test(Skip = true, Reason = "Временно нестабилен")]
+    [TestTimeout(1000)]
+    [Test(Skip = false, Reason = "Временно нестабилен")]
     public async Task FastExpValueTask_Works()
     {
         var vt = ElGamalEncryption.MathTools.FastExpValueTask(2, 10, 1000);
