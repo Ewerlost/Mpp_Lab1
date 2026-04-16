@@ -181,7 +181,7 @@ public class ExtraAssertsAndAsyncTests
         await Assert.ThrowsAsync<ArgumentException>(async () => await ElGamalEncryption.MathTools.ModInverseValueTask(6, 9));
     }
 
-    [Test]
+    [Test(Skip = false, Reason = "Временно нестабилен")]
     public void SequenceAndNullAndNotNullExample()
     {
         byte[] arr = null;

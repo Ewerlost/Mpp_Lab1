@@ -1,4 +1,5 @@
-﻿using System;
+﻿#nullable enable
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -7,10 +8,11 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using DynamicThreadPoolModule;
 
 namespace TestRunnerApp
 {
-    class Program
+    internal class Program
     {
         private static readonly object _consoleLock = new();
         private static readonly Stopwatch _globalClock = Stopwatch.StartNew();
@@ -34,14 +36,22 @@ namespace TestRunnerApp
                 return 2;
             }
 
-            Console.WriteLine("Введите MaxDegreeOfParallelism (Enter = число ядер):");
+            Console.WriteLine("Введите MaxDegreeOfParallelism (Enter = число потоков):");
             Console.Write("> ");
             string? parallelInput = Console.ReadLine();
             int maxParallel = int.TryParse(parallelInput, out var parsed) && parsed > 0
                 ? parsed
                 : Environment.ProcessorCount;
 
+            Console.WriteLine("Введите количество повторов всей выборки тестов (Enter = 1, для демонстрации нагрузки обычно 50):");
+            Console.Write("> ");
+            string? repeatInput = Console.ReadLine();
+            int repetitions = int.TryParse(repeatInput, out var repeatsParsed) && repeatsParsed > 0
+                ? repeatsParsed
+                : 1;
+
             WriteInfoLine($"MaxDegreeOfParallelism = {maxParallel}");
+            WriteInfoLine($"Repetitions = {repetitions}");
 
             Assembly asm;
             try
@@ -68,13 +78,54 @@ namespace TestRunnerApp
 
             var allTestCases = BuildTestCases(fixtureTypes);
 
-            var grouped = allTestCases.GroupBy(t => t.FixtureType).ToList();
+            if (!allTestCases.Any())
+            {
+                Console.WriteLine("No test cases found.");
+                return 0;
+            }
+
+            var grouped = allTestCases
+                .GroupBy(t => t.FixtureType)
+                .ToList();
 
             var summary = new ConcurrentBag<TestResultRecord>();
-            var globalSemaphore = new SemaphoreSlim(maxParallel, maxParallel);
+
+            int minWorkers = Math.Max(1, Math.Min(2, maxParallel));
+
+            using var pool = new DynamicThreadPool<TestResultRecord>(
+                minWorkers: minWorkers,
+                maxWorkers: maxParallel,
+                idleTimeout: TimeSpan.FromSeconds(3),
+                queuePressureTimeout: TimeSpan.FromMilliseconds(300),
+                hungWorkerTimeout: TimeSpan.FromSeconds(5),
+                supervisorInterval: TimeSpan.FromMilliseconds(200));
+
+            pool.StateChanged += snapshot =>
+            {
+                lock (_consoleLock)
+                {
+                    Console.WriteLine(
+                        $"[POOL] workers={snapshot.TotalWorkers}, busy={snapshot.BusyWorkers}, idle={snapshot.IdleWorkers}, queue={snapshot.QueuedItems}");
+                }
+            };
+
+            pool.Log += msg =>
+            {
+                lock (_consoleLock)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"[POOL] {msg}");
+                    Console.ResetColor();
+                }
+            };
 
             var fixtureTasks = grouped
-                .Select(group => RunFixtureAsync(group.Key, group.ToList(), globalSemaphore, summary))
+                .Select(group =>
+                    RunFixtureAsync(
+                        group.Key,
+                        ExpandCases(group.ToList(), repetitions),
+                        pool,
+                        summary))
                 .ToList();
 
             await Task.WhenAll(fixtureTasks);
@@ -139,10 +190,25 @@ namespace TestRunnerApp
             return allTestCases;
         }
 
+        private static List<TestCaseInfo> ExpandCases(List<TestCaseInfo> baseCases, int repetitions)
+        {
+            if (repetitions <= 1)
+                return baseCases;
+
+            var expanded = new List<TestCaseInfo>(baseCases.Count * repetitions);
+
+            for (int i = 0; i < repetitions; i++)
+            {
+                expanded.AddRange(baseCases);
+            }
+
+            return expanded;
+        }
+
         private static async Task RunFixtureAsync(
             Type fixtureType,
             List<TestCaseInfo> cases,
-            SemaphoreSlim semaphore,
+            DynamicThreadPool<TestResultRecord> pool,
             ConcurrentBag<TestResultRecord> summary)
         {
             WriteInfoLine($"\n=== Fixture: {fixtureType.FullName} ===");
@@ -224,10 +290,12 @@ namespace TestRunnerApp
                 .ThenBy(t => t.TestName)
                 .ToList();
 
-            var tasks = new List<Task>();
+            var handles = new List<PoolHandle<TestResultRecord>>();
 
-            foreach (var tc in ordered)
+            for (int i = 0; i < ordered.Count; i++)
             {
+                var tc = ordered[i];
+
                 if (tc.IsSkipped)
                 {
                     summary.Add(new TestResultRecord(
@@ -238,27 +306,36 @@ namespace TestRunnerApp
                         _globalClock.Elapsed,
                         Thread.CurrentThread.ManagedThreadId));
 
-                    WriteYellowLine($"[SKIP] {tc.TestName} - {tc.SkipReason ?? "no reason"} (priority: {tc.EffectivePriority})");
+                    Console.WriteLine($"[SKIP] {tc.TestName} - {tc.SkipReason ?? "no reason"} (priority: {tc.EffectivePriority})");
                     continue;
                 }
 
-                await semaphore.WaitAsync();
-
-                tasks.Add(Task.Run(async () =>
+                int delayMs = GetProducerDelayMs(i);
+                if (delayMs > 0)
                 {
-                    try
-                    {
-                        var result = await RunTestCaseAsync(fixtureType, tc, setUp, tearDown);
-                        summary.Add(result);
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }));
+                    await Task.Delay(delayMs);
+                }
+
+                var handle = pool.Enqueue(
+                    () => RunTestCaseBlocking(fixtureType, tc, setUp, tearDown),
+                    tc.EffectivePriority,
+                    $"{tc.TestName}#{i + 1}");
+
+                handles.Add(handle);
             }
 
-            await Task.WhenAll(tasks);
+            foreach (var handle in handles)
+            {
+                try
+                {
+                    var result = await handle.Completion;
+                    summary.Add(result);
+                }
+                catch (Exception ex)
+                {
+                    WriteErrorLine($"[ERROR] pooled test failed: {ex.GetBaseException().Message}");
+                }
+            }
 
             if (oneTimeTear != null)
             {
@@ -273,7 +350,19 @@ namespace TestRunnerApp
             }
         }
 
-        private static async Task<TestResultRecord> RunTestCaseAsync(
+        private static int GetProducerDelayMs(int index)
+        {
+            int slot = index % 40;
+
+            if (slot < 10) return 20;       // стартовый всплеск
+            if (slot == 10) return 1200;    // пауза
+            if (slot < 18) return 350;      // редкие подачи
+            if (slot < 35) return 0;        // пик нагрузки
+            if (slot == 35) return 800;     // ещё пауза
+            return 100;                     // хвост
+        }
+
+        private static TestResultRecord RunTestCaseBlocking(
             Type fixtureType,
             TestCaseInfo tc,
             MethodInfo? setUp,
@@ -310,7 +399,7 @@ namespace TestRunnerApp
                     shouldRunTearDown = true;
                     try
                     {
-                        await InvokeMaybeAsync(setUp, fixtureInstance);
+                        InvokeMaybeAsync(setUp, fixtureInstance).GetAwaiter().GetResult();
                     }
                     catch (Exception ex)
                     {
@@ -319,7 +408,7 @@ namespace TestRunnerApp
 
                         if (baseEx is TestSkippedException)
                         {
-                            WriteYellowLine($"[SKIP] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
+                            Console.WriteLine($"[SKIP] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
                             return new TestResultRecord(
                                 tc,
                                 TestStatus.Skipped,
@@ -329,7 +418,7 @@ namespace TestRunnerApp
                                 threadId);
                         }
 
-                        WriteDarkRedLine($"[ERROR] {tc.TestName} - SetUp failed: {baseEx.Message} (priority: {tc.EffectivePriority})");
+                        Console.WriteLine($"[ERROR] {tc.TestName} - SetUp failed: {baseEx.Message} (priority: {tc.EffectivePriority})");
                         return new TestResultRecord(
                             tc,
                             TestStatus.Error,
@@ -343,12 +432,11 @@ namespace TestRunnerApp
                 int timeoutMs = tc.TimeoutMs;
                 var args = PrepareArguments(tc.Method, tc.Arguments);
 
-                var testTask = Task.Run(() => InvokeMaybeAsync(tc.Method, fixtureInstance, args));
+                var testTask = InvokeMaybeAsync(tc.Method, fixtureInstance, args);
 
                 if (timeoutMs != Timeout.Infinite)
                 {
-                    var completed = await Task.WhenAny(testTask, Task.Delay(timeoutMs));
-                    if (completed != testTask)
+                    if (!testTask.Wait(timeoutMs))
                     {
                         sw.Stop();
 
@@ -357,7 +445,7 @@ namespace TestRunnerApp
                             var _ = t.Exception;
                         }, TaskContinuationOptions.OnlyOnFaulted);
 
-                        WriteRedLine($"[TIMEOUT] {tc.TestName} | Timeout = {timeoutMs} ms | Priority: {tc.EffectivePriority}");
+                        Console.WriteLine($"[TIMEOUT] {tc.TestName} | Timeout = {timeoutMs} ms | Priority: {tc.EffectivePriority}");
 
                         return new TestResultRecord(
                             tc,
@@ -369,11 +457,13 @@ namespace TestRunnerApp
                             true);
                     }
                 }
-
-                await testTask;
+                else
+                {
+                    testTask.GetAwaiter().GetResult();
+                }
 
                 sw.Stop();
-                WriteGreenLine($"[PASS] {tc.TestName} (priority: {tc.EffectivePriority})");
+                Console.WriteLine($"[PASS] {tc.TestName} (priority: {tc.EffectivePriority})");
 
                 return new TestResultRecord(
                     tc,
@@ -400,7 +490,7 @@ namespace TestRunnerApp
                 {
                     try
                     {
-                        await InvokeMaybeAsync(tearDown, fixtureInstance);
+                        InvokeMaybeAsync(tearDown, fixtureInstance).GetAwaiter().GetResult();
                     }
                     catch (Exception ex)
                     {
@@ -421,17 +511,17 @@ namespace TestRunnerApp
 
             if (baseEx is AssertionFailedException)
             {
-                WriteRedLine($"[FAIL] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
+                Console.WriteLine($"[FAIL] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
                 return new TestResultRecord(tc, TestStatus.Failed, baseEx.Message, duration, startOffset, threadId);
             }
 
             if (baseEx is TestSkippedException)
             {
-                WriteYellowLine($"[SKIP] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
+                Console.WriteLine($"[SKIP] {tc.TestName} - {baseEx.Message} (priority: {tc.EffectivePriority})");
                 return new TestResultRecord(tc, TestStatus.Skipped, baseEx.Message, duration, startOffset, threadId);
             }
 
-            WriteDarkRedLine($"[ERROR] {tc.TestName} - {baseEx.GetType().Name}: {baseEx.Message} (priority: {tc.EffectivePriority})");
+            Console.WriteLine($"[ERROR] {tc.TestName} - {baseEx.GetType().Name}: {baseEx.Message} (priority: {tc.EffectivePriority})");
             return new TestResultRecord(tc, TestStatus.Error, $"{baseEx.GetType().Name}: {baseEx.Message}", duration, startOffset, threadId);
         }
 
@@ -504,6 +594,7 @@ namespace TestRunnerApp
                         }
                         catch
                         {
+                            // ignore
                         }
                     }
 
@@ -595,46 +686,6 @@ namespace TestRunnerApp
             Console.WriteLine(errorCount);
 
             Console.WriteLine($"Total duration: {_globalClock.Elapsed}");
-        }
-
-        private static void WriteGreenLine(string msg)
-        {
-            lock (_consoleLock)
-            {
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine(msg);
-                Console.ResetColor();
-            }
-        }
-
-        private static void WriteRedLine(string msg)
-        {
-            lock (_consoleLock)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine(msg);
-                Console.ResetColor();
-            }
-        }
-
-        private static void WriteDarkRedLine(string msg)
-        {
-            lock (_consoleLock)
-            {
-                Console.ForegroundColor = ConsoleColor.DarkRed;
-                Console.WriteLine(msg);
-                Console.ResetColor();
-            }
-        }
-
-        private static void WriteYellowLine(string msg)
-        {
-            lock (_consoleLock)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine(msg);
-                Console.ResetColor();
-            }
         }
 
         private static void WriteInfoLine(string msg)
