@@ -43,12 +43,25 @@ namespace TestRunnerApp
                 ? parsed
                 : Environment.ProcessorCount;
 
-            Console.WriteLine("Введите количество повторов всей выборки тестов (Enter = 1, для демонстрации нагрузки обычно 50):");
+            Console.WriteLine("Введите количество повторов всей выборки тестов");
             Console.Write("> ");
             string? repeatInput = Console.ReadLine();
-            int repetitions = int.TryParse(repeatInput, out var repeatsParsed) && repeatsParsed > 0
-                ? repeatsParsed
-                : 1;
+            int repetitions = int.TryParse(repeatInput, out var repeatsParsed) && repeatsParsed > 0 ? repeatsParsed : 1;
+
+            Console.WriteLine("Введите категорию для фильтрации (Enter = без фильтра):");
+            Console.Write("> ");
+            string? categoryFilter = Console.ReadLine()?.Trim();
+
+            Console.WriteLine("Введите автора для фильтрации (Enter = без фильтра):");
+            Console.Write("> ");
+            string? authorFilter = Console.ReadLine()?.Trim();
+
+            Console.WriteLine("Введите минимальный приоритет (Enter = без фильтра):");
+            Console.Write("> ");
+            string? minPriorityInput = Console.ReadLine();
+            int? minPriorityFilter = int.TryParse(minPriorityInput, out var mp) ? mp : null;
+
+            Func<TestCaseInfo, bool> filter = BuildFilter(categoryFilter, authorFilter, minPriorityFilter);
 
             WriteInfoLine($"MaxDegreeOfParallelism = {maxParallel}");
             WriteInfoLine($"Repetitions = {repetitions}");
@@ -76,7 +89,7 @@ namespace TestRunnerApp
                 return 0;
             }
 
-            var allTestCases = BuildTestCases(fixtureTypes);
+            var allTestCases = BuildTestCases(fixtureTypes).Where(filter).ToList();
 
             if (!allTestCases.Any())
             {
@@ -141,19 +154,53 @@ namespace TestRunnerApp
 
             foreach (var type in fixtureTypes)
             {
+                var classCategories = type
+                    .GetCustomAttributes(true)
+                    .OfType<CategoryAttribute>()
+                    .Select(a => a.Name)
+                    .ToArray();
+
+                var classAuthor = type.GetCustomAttribute<AuthorAttribute>()?.Name;
+
                 var methods = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                                  .Where(m => m.GetCustomAttribute(typeof(TestAttribute)) != null
-                                           || m.GetCustomAttributes(typeof(TestCaseAttribute), false).Any());
+                    .Where(m =>
+                        m.GetCustomAttribute<TestAttribute>() != null ||
+                        m.GetCustomAttributes(typeof(TestCaseAttribute), false).Any() ||
+                        m.GetCustomAttribute<TestCaseSourceAttribute>() != null);
 
                 foreach (var m in methods)
                 {
                     var testAttr = m.GetCustomAttribute<TestAttribute>();
                     var timeoutAttr = m.GetCustomAttribute<TestTimeoutAttribute>();
+
+                    var methodCategories = m
+                        .GetCustomAttributes(true)
+                        .OfType<CategoryAttribute>()
+                        .Select(a => a.Name)
+                        .ToArray();
+
+                    var categories = classCategories
+                        .Concat(methodCategories)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+
+                    var methodAuthor = m.GetCustomAttribute<AuthorAttribute>()?.Name ?? classAuthor;
+                    int timeoutMs = timeoutAttr?.Milliseconds ?? Timeout.Infinite;
+
+                    var sourceAttr = m.GetCustomAttribute<TestCaseSourceAttribute>();
+                    if (sourceAttr != null)
+                    {
+                        foreach (var srcCase in EnumerateSourceCases(type, m, sourceAttr))
+                        {
+                            AddCase(allTestCases, type, m, srcCase, testAttr, timeoutMs, categories, methodAuthor);
+                        }
+
+                        continue;
+                    }
+
                     var testCases = m.GetCustomAttributes(typeof(TestCaseAttribute), false)
                                      .Cast<TestCaseAttribute>()
                                      .ToArray();
-
-                    int timeoutMs = timeoutAttr?.Milliseconds ?? Timeout.Infinite;
 
                     if (testCases.Length == 0)
                     {
@@ -165,7 +212,10 @@ namespace TestRunnerApp
                             EffectivePriority = testAttr?.Priority ?? 0,
                             IsSkipped = testAttr?.Skip ?? false,
                             SkipReason = testAttr?.Reason,
-                            TimeoutMs = timeoutMs
+                            TimeoutMs = timeoutMs,
+                            Categories = categories,
+                            Author = methodAuthor,
+                            DisplayName = null
                         });
                     }
                     else
@@ -177,10 +227,13 @@ namespace TestRunnerApp
                                 FixtureType = type,
                                 Method = m,
                                 Arguments = tc.Arguments ?? Array.Empty<object>(),
-                                EffectivePriority = (tc.Priority != 0) ? tc.Priority : (testAttr?.Priority ?? 0),
+                                EffectivePriority = tc.Priority != 0 ? tc.Priority : (testAttr?.Priority ?? 0),
                                 IsSkipped = tc.Skip || (testAttr?.Skip ?? false),
                                 SkipReason = tc.Reason ?? testAttr?.Reason,
-                                TimeoutMs = timeoutMs
+                                TimeoutMs = timeoutMs,
+                                Categories = categories,
+                                Author = methodAuthor,
+                                DisplayName = null
                             });
                         }
                     }
@@ -188,6 +241,104 @@ namespace TestRunnerApp
             }
 
             return allTestCases;
+        }
+
+        private static string[] GetCategories(Type fixtureType, MethodInfo method)
+        {
+            return fixtureType.GetCustomAttributes(true).OfType<CategoryAttribute>().Select(a => a.Name)
+                .Concat(method.GetCustomAttributes(true).OfType<CategoryAttribute>().Select(a => a.Name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static string? GetAuthor(Type fixtureType, MethodInfo method)
+        {
+            return method.GetCustomAttribute<AuthorAttribute>()?.Name
+                ?? fixtureType.GetCustomAttribute<AuthorAttribute>()?.Name;
+        }
+
+        private static void AddCase(List<TestCaseInfo> allTestCases, Type type, MethodInfo method, TestCaseData srcCase, TestAttribute? testAttr, int timeoutMs, string[] baseCategories, string? baseAuthor)
+        {
+            var mergedCategories = baseCategories
+                .Concat(srcCase.Categories ?? new List<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            allTestCases.Add(new TestCaseInfo
+            {
+                FixtureType = type,
+                Method = method,
+                Arguments = srcCase.Arguments ?? Array.Empty<object>(),
+                EffectivePriority = srcCase.Priority != 0 ? srcCase.Priority : (testAttr?.Priority ?? 0),
+                IsSkipped = srcCase.Skip || (testAttr?.Skip ?? false),
+                SkipReason = srcCase.Reason ?? testAttr?.Reason,
+                TimeoutMs = timeoutMs,
+                Categories = mergedCategories,
+                Author = srcCase.Author ?? baseAuthor,
+                DisplayName = srcCase.Name
+            });
+        }
+
+        private static IEnumerable<TestCaseData> EnumerateSourceCases(Type fixtureType, MethodInfo testMethod, TestCaseSourceAttribute sourceAttr)
+        {
+            Type sourceType = sourceAttr.SourceType ?? fixtureType;
+
+            const BindingFlags flags =
+                BindingFlags.Public |
+                BindingFlags.NonPublic |
+                BindingFlags.Static |
+                BindingFlags.Instance;
+
+            var member = sourceType.GetMember(sourceAttr.MemberName, flags).FirstOrDefault();
+            if (member == null)
+                yield break;
+
+            object? raw = null;
+
+            try
+            {
+                switch (member)
+                {
+                    case MethodInfo mi:
+                        raw = mi.Invoke(mi.IsStatic ? null : Activator.CreateInstance(sourceType), Array.Empty<object>());
+                        break;
+
+                    case PropertyInfo pi:
+                        raw = pi.GetValue(pi.GetGetMethod(true)?.IsStatic == true ? null : Activator.CreateInstance(sourceType));
+                        break;
+
+                    case FieldInfo fi:
+                        raw = fi.GetValue(fi.IsStatic ? null : Activator.CreateInstance(sourceType));
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SOURCE ERROR] {testMethod.Name}: {ex.GetBaseException().Message}");
+                yield break;
+            }
+
+            if (raw == null)
+                yield break;
+
+            if (raw is IEnumerable<TestCaseData> typed)
+            {
+                foreach (var item in typed)
+                    yield return item;
+
+                yield break;
+            }
+
+            if (raw is System.Collections.IEnumerable enumerable)
+            {
+                foreach (var item in enumerable)
+                {
+                    if (item is TestCaseData tcd)
+                        yield return tcd;
+                    else if (item is object[] args)
+                        yield return new TestCaseData(args);
+                }
+            }
         }
 
         private static List<TestCaseInfo> ExpandCases(List<TestCaseInfo> baseCases, int repetitions)
@@ -354,12 +505,12 @@ namespace TestRunnerApp
         {
             int slot = index % 40;
 
-            if (slot < 10) return 20;       // стартовый всплеск
-            if (slot == 10) return 1200;    // пауза
-            if (slot < 18) return 350;      // редкие подачи
-            if (slot < 35) return 0;        // пик нагрузки
-            if (slot == 35) return 800;     // ещё пауза
-            return 100;                     // хвост
+            if (slot < 10) return 20;       
+            if (slot == 10) return 1200;    
+            if (slot < 18) return 350;      
+            if (slot < 35) return 0;        
+            if (slot == 35) return 800;     
+            return 100;                   
         }
 
         private static TestResultRecord RunTestCaseBlocking(
@@ -594,7 +745,7 @@ namespace TestRunnerApp
                         }
                         catch
                         {
-                            // ignore
+                           
                         }
                     }
 
@@ -637,6 +788,29 @@ namespace TestRunnerApp
                 await ((dynamic)ret).ConfigureAwait(false);
                 return;
             }
+        }
+
+        private static Func<TestCaseInfo, bool> BuildFilter(string? category, string? author, int? minPriority)
+        {
+            return tc =>
+            {
+                if (!string.IsNullOrWhiteSpace(category))
+                {
+                    if (!tc.Categories.Any(c => string.Equals(c, category, StringComparison.OrdinalIgnoreCase)))
+                        return false;
+                }
+
+                if (!string.IsNullOrWhiteSpace(author))
+                {
+                    if (!string.Equals(tc.Author, author, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                if (minPriority.HasValue && tc.EffectivePriority < minPriority.Value)
+                    return false;
+
+                return true;
+            };
         }
 
         private static IEnumerable<Type> GetTypesSafe(Assembly asm)
@@ -716,8 +890,12 @@ namespace TestRunnerApp
             public string? SkipReason { get; init; }
             public int TimeoutMs { get; init; } = Timeout.Infinite;
 
+            public string[] Categories { get; init; } = Array.Empty<string>();
+            public string? Author { get; init; }
+            public string? DisplayName { get; init; }
+
             public string TestName =>
-                $"{FixtureType.Name}.{Method.Name}({string.Join(", ", Arguments.Select(a => a?.ToString() ?? "null"))})";
+                DisplayName ?? $"{FixtureType.Name}.{Method.Name}({string.Join(", ", Arguments.Select(a => a?.ToString() ?? "null"))})";
         }
 
         private enum TestStatus

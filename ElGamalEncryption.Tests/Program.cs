@@ -53,6 +53,7 @@ public class MathToolsTests
 }
 
 [TestFixture]
+[Author("Alexey")]
 public class ElGamalTests
 {
     private ElGamalEncryption.ElGamal eg;
@@ -86,6 +87,7 @@ public class ElGamalTests
     }
 
     [Test]
+    [Author("Alexey")]
     public void EncryptThenDecrypt_RoundtripEqualsOriginal()
     {
         eg.InitializeElGamal(23, 5, 6, 7);
@@ -136,6 +138,7 @@ public class SharedContextTests
 }
 
 [TestFixture]
+[Author("Alexey")]
 public class ExtraAssertsAndAsyncTests
 {
     [Test]
@@ -190,5 +193,31 @@ public class ExtraAssertsAndAsyncTests
         byte[] arr2 = new byte[] { 1, 2 };
         Assert.IsNotNull(arr2);
         Assert.SequenceEqual(new byte[] { 1, 2 }, arr2);
+    }
+}
+
+[TestFixture]
+[Category("Math")]
+[Author("Alexey")]
+public class MathToolsSourceTests
+{
+    public static IEnumerable<TestCaseData> FastExpCases()
+    {
+        yield return new TestCaseData(3, 3, 7, 27 % 7)
+            .Category("smoke", "math")
+            .WithAuthor("Alexey")
+            .Named("FastExp_3_3_7");
+
+        yield return new TestCaseData(2, 5, 13, 32 % 13)
+            .Category("regression", "math")
+            .WithAuthor("Alexey")
+            .Named("FastExp_2_5_13");
+    }
+
+    [TestCaseSource(nameof(FastExpCases))]
+    public void FastExp_FromSource(long a, long b, long n, long expected)
+    {
+        var r = ElGamalEncryption.MathTools.FastExp(a, b, n);
+        Assert.AreEqual(expected, r);
     }
 }
